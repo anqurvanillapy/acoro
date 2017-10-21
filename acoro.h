@@ -11,9 +11,9 @@
 
 namespace acoro {
 
-class acoro_stack_pool {
+class stack_pool {
 public:
-    acoro_stack_pool()
+    stack_pool()
     {
         for (int i = 0; i < MAX_ACORO_COUNT; ++i) {
             char *s = new char[ACORO_STACKSIZ];
@@ -21,15 +21,12 @@ public:
         }
     }
 
-    ~acoro_stack_pool()
-    {
-        for (auto s : q_) delete[] s;
-    }
+    ~stack_pool() { for (auto s : q_) delete[] s; }
 
-    acoro_stack_pool(const acoro_stack_pool&) = delete;
-    acoro_stack_pool& operator=(const acoro_stack_pool&) = delete;
-    acoro_stack_pool(acoro_stack_pool&&) = delete;
-    acoro_stack_pool& operator=(acoro_stack_pool&&) = delete;
+    stack_pool(const stack_pool&)               = delete;
+    stack_pool& operator=(const stack_pool&)    = delete;
+    stack_pool(stack_pool&&)                    = delete;
+    stack_pool& operator=(stack_pool&&)         = delete;
 
     char *
     acquire()
@@ -40,31 +37,21 @@ public:
         return ret;
     }
 
-    void
-    release(char *s)
-    {
-        q_.push_back(s);
-    }
+    void release(char *s) { q_.push_back(s); }
 private:
     std::list<char*> q_;
 };
 
-template <typename T, typename... Args>
-class acoro {
+template <typename T>
+class asfn {
 public:
-    acoro(int id, const T& f, Args... args)
-    : id_
-    {
-        auto unbound_func = std::function<T>(f);
-        func_ = std::bind(unbound_func, ...args);
-    }
+    asfn(int id, const std::function<T>& f) : id_{id}, func_{f} { /* nop */ }
+    ~asfn() = default;
 
-    ~acoro() = default;
-
-    acoro(const acoro&) = delete;
-    acoro& operator=(const acoro&) = delete;
-    acoro(acoro&&) = delete;
-    acoro& operator=(acoro&&) = delete;
+    asfn(const asfn&)               = delete;
+    asfn& operator=(const asfn&)    = delete;
+    asfn(asfn&&)                    = delete;
+    asfn& operator=(asfn&&)         = delete;
 private:
     std::function<T> func_;
     int id_{};
@@ -72,27 +59,50 @@ private:
     std::jmp_buf env_;
 };
 
-// TODO: Wrap into a scheduler class.
-static std::list<std::shared_ptr<acoro>> acoro_list_{};
-static acoro_stack_pool pool_{};
-static int nacoro_{};
+template <typename T, typename ...Args>
+class sched {
+public:
+    sched() = default;
+    ~sched() = default;
 
-std::jmp_buf main_env_;
+    sched(const sched&)             = delete;
+    sched& operator=(const sched&)  = delete;
+    sched(sched&&)                  = delete;
+    sched& operator=(sched&&)       = delete;
 
-void
-run()
-{
-}
+    bool full() { return nacoro_ > MAX_ACORO_COUNT; }
 
-template <typename T, typename... Args>
-void
-add()
-{
-}
+    void
+    add(int id, const T& f, Args... args)
+    {
+        assert(0 <= nacoro_ && nacoro_ <= MAX_ACORO_COUNT);
+        if (nacoro_ + 1 > MAX_ACORO_COUNT) return;
+        auto fntor = std::bind(f, args...);
+        auto new_asfn = std::make_shared<asfn<T>>(id, std::move(fntor));
+        acoro_list_.emplace_back(std::move(new_asfn));
+    }
 
-void
-yield()
-{
-}
+    void
+    run()
+    {
+    }
+
+    void
+    yield()
+    {
+    }
+private:
+    static std::list<std::shared_ptr<asfn<T>>> acoro_list_;
+    static stack_pool pool_;
+    static int nacoro_;
+    static std::jmp_buf main_env_;
+};
+
+template <typename T, typename ...Args>
+std::list<std::shared_ptr<asfn<T>>> sched<T, Args...>::acoro_list_{};
+template <typename T, typename ...Args>
+stack_pool sched<T, Args...>::pool_{};
+template <typename T, typename ...Args>
+int sched<T, Args...>::nacoro_{};
 
 } /* namespace acoro */
