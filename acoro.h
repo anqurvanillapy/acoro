@@ -13,7 +13,7 @@
 
 namespace acoro {
 
-typedef void (*acoro_func_t)(const void *);
+typedef void (*acoro_func_t)(const void*);
 
 enum {
     ACORO_FUNC_INIT,
@@ -28,20 +28,23 @@ public:
     stack_pool()
     {
         for (int i = 0; i < MAX_ACORO_COUNT; ++i) {
-            char *s = new char[ACORO_STACKSIZ];
+            char* s = new char[ACORO_STACKSIZ];
             std::memset(s, 0, ACORO_STACKSIZ);
             q_.push_back(s);
         }
     }
 
-    ~stack_pool() { for (auto s : q_) delete[] s; }
+    ~stack_pool()
+    {
+        for (auto s : q_) delete[] s;
+    }
 
     stack_pool(const stack_pool&)               = delete;
     stack_pool& operator=(const stack_pool&)    = delete;
     stack_pool(stack_pool&&)                    = delete;
     stack_pool& operator=(stack_pool&&)         = delete;
 
-    char *
+    char*
     acquire()
     {
         if (q_.empty()) return NULL;
@@ -50,7 +53,11 @@ public:
         return ret;
     }
 
-    void release(char *s) { q_.push_back(s); }
+    void
+    release(char* s)
+    {
+        q_.push_back(s);
+    }
 private:
     std::list<char*> q_;
 };
@@ -65,15 +72,13 @@ public:
     sched(sched&&)                  = delete;
     sched& operator=(sched&&)       = delete;
 
-    friend class asfn;
-
     bool full() const;
-    void add(acoro_func_t f, const void *arg);
+    void add(acoro_func_t f, const void* arg);
     void run();
     void yield();
-private:
-    static asfn *current_asfn_;
-    static asfn *asfn_list_;
+
+    static asfn* current_asfn_;
+    static asfn* asfn_list_;
 
     static stack_pool pool_;
     static int nasfn_;
@@ -81,20 +86,19 @@ private:
     static std::jmp_buf main_env_;
 };
 
-// Static initialization.
-asfn*        sched::current_asfn_   {};
-asfn*        sched::asfn_list_      {};
-stack_pool   sched::pool_           {};
-int          sched::nasfn_          {};
-std::jmp_buf sched::main_env_       {};
+asfn*           sched::current_asfn_{};
+asfn*           sched::asfn_list_   {};
+stack_pool      sched::pool_        {};
+int             sched::nasfn_       {};
+std::jmp_buf    sched::main_env_    {};
 
 class asfn {
 public:
-    asfn(int id, acoro_func_t f, const void *arg, char *sp)
+    asfn(int id, acoro_func_t f, const void* arg, char* sp)
         : id_{id}
         , func_{f}
         , arg_{arg}
-        , sp_{(unsigned long)sp}
+        , sp_{reinterpret_cast<unsigned long>(sp)}
     {
         assert(sp_);
     }
@@ -108,28 +112,34 @@ public:
 
     friend class sched;
 
-    int id() const { return id_; }
+    int
+    id() const
+    {
+        return id_;
+    }
 
     void
     try_start()
     {
-        unsigned long sp = ::setjmp(env_);
+        auto sp = (unsigned long)::setjmp(env_);
         if (!sp) return;
 #if defined(__i386__)
-        __asm__ __volatile__("movl %0, %%esp"::"r"(sp):"%esp");
+        __asm__ __volatile__("movl %%ebp, %0"::"r"(sp):);
+        __asm__ __volatile__("movl %esp, %ebp");
 #elif defined(__x86_64__)
-        __asm__ __volatile__("movq %0, %%rsp"::"r"(sp):"%rsp");
+        __asm__ __volatile__("movq %%rbp, %0"::"r"(sp):);
+        __asm__ __volatile__("movq %rsp, %rbp");
 #endif
         sched::current_asfn_->func_(sched::current_asfn_->arg_);
         ::longjmp(sched::main_env_, ACORO_FUNC_END);
     }
 private:
-    asfn *prev{};
-    asfn *next{};
+    asfn* prev{};
+    asfn* next{};
 
     int id_;
     acoro_func_t func_;
-    const void *arg_;
+    const void* arg_;
     unsigned long sp_;
     std::jmp_buf env_{};
 };
@@ -141,13 +151,14 @@ sched::full() const
 }
 
 void
-sched::add(acoro_func_t f, const void *arg)
+sched::add(acoro_func_t f, const void* arg)
 {
     assert(0 <= nasfn_ && nasfn_ <= MAX_ACORO_COUNT);
     if (nasfn_ + 1 > MAX_ACORO_COUNT) return;
 
     auto sp = pool_.acquire();
-    auto _asfn = new asfn(nasfn_, f, arg, sp + ACORO_STACKSIZ - 16);
+    printf("new stack %lu from stack pool...\n", (unsigned long)(sp + ACORO_STACKSIZ - 64));
+    auto _asfn = new asfn(nasfn_, f, arg, sp + ACORO_STACKSIZ - 64);
     assert(_asfn);
     _asfn->try_start();
     ++nasfn_;
@@ -169,7 +180,7 @@ sched::run()
 {
     if (!asfn_list_) return;
 
-    asfn *_asfn;
+    asfn* _asfn;
     switch (::setjmp(main_env_)) {
     case ACORO_FUNC_INIT:
         current_asfn_ = asfn_list_;
@@ -189,19 +200,41 @@ sched::run()
         }
         break;
     case ACORO_FUNC_YIELD:
+        printf(">>> id=%d -> ", current_asfn_->id());
         current_asfn_ = current_asfn_->next;
+        printf("id=%d\n", current_asfn_->id());
         break;
     }
 
     assert(current_asfn_);
-    ::longjmp(current_asfn_->env_, current_asfn_->sp_);
+    ::longjmp(current_asfn_->env_, ACORO_FUNC_END);
 }
 
 void
 sched::yield()
 {
-    if (::setjmp(current_asfn_->env_)) return;
-    ::longjmp(main_env_, ACORO_FUNC_YIELD);
+    if (::setjmp(current_asfn_->env_)) {
+        printf("\tresume the asfn id=%d w/ sp=%lu\n",
+                current_asfn_->id(), current_asfn_->sp_);
+/*
+#if defined(__i386__)
+        __asm__ __volatile__("movl %%esp, %0"::"r"(sp):);
+#elif defined(__x86_64__)
+        __asm__ __volatile__("movq %%rsp, %0"::"r"(sp):);
+#endif
+*/
+    } else {
+        printf("\tfirst yield for the asfn id=%d w/ sp=%lu\n",
+                current_asfn_->id(), current_asfn_->sp_);
+/*
+#if defined(__i386__)
+        __asm__ __volatile__("movl %0, %%esp":"=r"(current_asfn_->sp_)::);
+#elif defined(__x86_64__)
+        __asm__ __volatile__("movq %0, %%rsp":"=r"(current_asfn_->sp_)::);
+#endif
+*/
+        ::longjmp(main_env_, ACORO_FUNC_YIELD);
+    }
 }
 
 } /* namespace acoro */

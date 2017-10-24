@@ -4,11 +4,12 @@
 acoro::sched sched;
 
 void
-foo(const void *msg)
+foo(const void* msg)
 {
     for (int i = 0; i < 5; ++i) {
-        std::cout << (char *)msg << std::endl;
+        std::cout << (char*)msg << "\n";
         sched.yield();
+        printf("\tcan i reach here? i=%d\n", i);
     }
 }
 
