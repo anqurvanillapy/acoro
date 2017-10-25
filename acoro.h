@@ -1,12 +1,9 @@
 #pragma once
 
-#include <cstring>
 #include <memory>
 #include <list>
 #include <csetjmp>
 #include <cassert>
-
-#include <cstdio>
 
 #define MAX_ACORO_COUNT 32
 #define ACORO_STACKSIZ (1024 * 1024)
@@ -28,15 +25,14 @@ public:
     stack_pool()
     {
         for (int i = 0; i < MAX_ACORO_COUNT; ++i) {
-            char* s = new char[ACORO_STACKSIZ];
-            std::memset(s, 0, ACORO_STACKSIZ);
+            auto s = ::operator new(ACORO_STACKSIZ);
             q_.push_back(s);
         }
     }
 
     ~stack_pool()
     {
-        for (auto s : q_) delete[] s;
+        for (auto s : q_) delete[] (char*)s;
     }
 
     stack_pool(const stack_pool&)               = delete;
@@ -44,7 +40,7 @@ public:
     stack_pool(stack_pool&&)                    = delete;
     stack_pool& operator=(stack_pool&&)         = delete;
 
-    char*
+    void*
     acquire()
     {
         if (q_.empty()) return NULL;
@@ -54,12 +50,12 @@ public:
     }
 
     void
-    release(char* s)
+    release(void* s)
     {
         q_.push_back(s);
     }
 private:
-    std::list<char*> q_;
+    std::list<void*> q_;
 };
 
 class sched {
@@ -94,11 +90,11 @@ std::jmp_buf    sched::main_env_    {};
 
 class asfn {
 public:
-    asfn(int id, acoro_func_t f, const void* arg, char* sp)
+    asfn(int id, acoro_func_t f, const void* arg, unsigned long sp)
         : id_{id}
         , func_{f}
         , arg_{arg}
-        , sp_{reinterpret_cast<unsigned long>(sp)}
+        , sp_{sp}
     {
         assert(sp_);
     }
@@ -119,21 +115,23 @@ public:
     }
 
     void
-    try_start()
+    init()
     {
-        auto sp = (unsigned long)::setjmp(env_);
-        if (!sp) return;
+        if (::setjmp(env_)) start_();
+    }
+private:
+    static void
+    start_()
+    {
 #if defined(__i386__)
-        __asm__ __volatile__("movl %%ebp, %0"::"r"(sp):);
-        __asm__ __volatile__("movl %esp, %ebp");
+        __asm__ __volatile__("movl %0, %%esp"::"r"(sched::current_asfn_->sp_):"%esp");
 #elif defined(__x86_64__)
-        __asm__ __volatile__("movq %%rbp, %0"::"r"(sp):);
-        __asm__ __volatile__("movq %rsp, %rbp");
+        __asm__ __volatile__("movq %0, %%rsp"::"r"(sched::current_asfn_->sp_):"%rsp");
 #endif
         sched::current_asfn_->func_(sched::current_asfn_->arg_);
         ::longjmp(sched::main_env_, ACORO_FUNC_END);
     }
-private:
+
     asfn* prev{};
     asfn* next{};
 
@@ -157,10 +155,9 @@ sched::add(acoro_func_t f, const void* arg)
     if (nasfn_ + 1 > MAX_ACORO_COUNT) return;
 
     auto sp = pool_.acquire();
-    printf("new stack %lu from stack pool...\n", (unsigned long)(sp + ACORO_STACKSIZ - 64));
-    auto _asfn = new asfn(nasfn_, f, arg, sp + ACORO_STACKSIZ - 64);
+    auto _asfn = new asfn(nasfn_, f, arg, (unsigned long)((char*)sp + ACORO_STACKSIZ));
     assert(_asfn);
-    _asfn->try_start();
+    _asfn->init();
     ++nasfn_;
 
     if (asfn_list_) {
@@ -200,9 +197,7 @@ sched::run()
         }
         break;
     case ACORO_FUNC_YIELD:
-        printf(">>> id=%d -> ", current_asfn_->id());
         current_asfn_ = current_asfn_->next;
-        printf("id=%d\n", current_asfn_->id());
         break;
     }
 
@@ -213,28 +208,7 @@ sched::run()
 void
 sched::yield()
 {
-    if (::setjmp(current_asfn_->env_)) {
-        printf("\tresume the asfn id=%d w/ sp=%lu\n",
-                current_asfn_->id(), current_asfn_->sp_);
-/*
-#if defined(__i386__)
-        __asm__ __volatile__("movl %%esp, %0"::"r"(sp):);
-#elif defined(__x86_64__)
-        __asm__ __volatile__("movq %%rsp, %0"::"r"(sp):);
-#endif
-*/
-    } else {
-        printf("\tfirst yield for the asfn id=%d w/ sp=%lu\n",
-                current_asfn_->id(), current_asfn_->sp_);
-/*
-#if defined(__i386__)
-        __asm__ __volatile__("movl %0, %%esp":"=r"(current_asfn_->sp_)::);
-#elif defined(__x86_64__)
-        __asm__ __volatile__("movq %0, %%rsp":"=r"(current_asfn_->sp_)::);
-#endif
-*/
-        ::longjmp(main_env_, ACORO_FUNC_YIELD);
-    }
+    if (!::setjmp(current_asfn_->env_)) ::longjmp(main_env_, ACORO_FUNC_YIELD);
 }
 
 } /* namespace acoro */
