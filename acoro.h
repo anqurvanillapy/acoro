@@ -208,6 +208,7 @@ sched::run()
 void
 sched::yield()
 {
+    // TODO: `yield' can return value for implementing generators.
     if (!::setjmp(current_asfn_->env_)) ::longjmp(main_env_, ACORO_FUNC_YIELD);
 }
 
