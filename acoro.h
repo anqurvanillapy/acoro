@@ -25,14 +25,14 @@ public:
     stack_pool()
     {
         for (int i = 0; i < MAX_ACORO_COUNT; ++i) {
-            auto s = ::operator new(ACORO_STACKSIZ);
+            auto s = new char[ACORO_STACKSIZ];
             q_.push_back(s);
         }
     }
 
     ~stack_pool()
     {
-        for (auto s : q_) delete[] (char*)s;
+        for (auto s : q_) delete[] s;
     }
 
     stack_pool(const stack_pool&)               = delete;
@@ -40,7 +40,7 @@ public:
     stack_pool(stack_pool&&)                    = delete;
     stack_pool& operator=(stack_pool&&)         = delete;
 
-    void*
+    char*
     acquire()
     {
         if (q_.empty()) return NULL;
@@ -50,12 +50,12 @@ public:
     }
 
     void
-    release(void* s)
+    release(char* s)
     {
         q_.push_back(s);
     }
 private:
-    std::list<void*> q_;
+    std::list<char*> q_;
 };
 
 class sched {
@@ -90,11 +90,12 @@ std::jmp_buf    sched::main_env_    {};
 
 class asfn {
 public:
-    asfn(int id, acoro_func_t f, const void* arg, unsigned long sp)
+    asfn(int id, acoro_func_t f, const void* arg, char* sp)
         : id_{id}
         , func_{f}
         , arg_{arg}
-        , sp_{sp}
+        , hp_{(unsigned long)sp}
+        , sp_{hp_ + ACORO_STACKSIZ}
     {
         assert(sp_);
     }
@@ -124,9 +125,19 @@ private:
     start_()
     {
 #if defined(__i386__)
-        __asm__ __volatile__("movl %0, %%esp"::"r"(sched::current_asfn_->sp_):"%esp");
+        __asm__ __volatile__(
+            "movl %0, %%esp"
+            :
+            : "r"(sched::current_asfn_->sp_)
+            : "%esp"
+        );
 #elif defined(__x86_64__)
-        __asm__ __volatile__("movq %0, %%rsp"::"r"(sched::current_asfn_->sp_):"%rsp");
+        __asm__ __volatile__(
+            "movq %0, %%rsp"
+            :
+            : "r"(sched::current_asfn_->sp_)
+            : "%rsp"
+        );
 #endif
         sched::current_asfn_->func_(sched::current_asfn_->arg_);
         ::longjmp(sched::main_env_, ACORO_FUNC_END);
@@ -138,6 +149,7 @@ private:
     int id_;
     acoro_func_t func_;
     const void* arg_;
+    unsigned long hp_;
     unsigned long sp_;
     std::jmp_buf env_{};
 };
@@ -155,7 +167,7 @@ sched::add(acoro_func_t f, const void* arg)
     if (nasfn_ + 1 > MAX_ACORO_COUNT) return;
 
     auto sp = pool_.acquire();
-    auto _asfn = new asfn(nasfn_, f, arg, (unsigned long)((char*)sp + ACORO_STACKSIZ));
+    auto _asfn = new asfn(nasfn_, f, arg, sp);
     assert(_asfn);
     _asfn->init();
     ++nasfn_;
@@ -186,6 +198,7 @@ sched::run()
         _asfn = current_asfn_;
         --nasfn_;
         if (_asfn->next == _asfn) {
+            pool_.release((char*)_asfn->hp_);
             asfn_list_ = NULL;
             delete _asfn;
             return;
@@ -193,6 +206,7 @@ sched::run()
             current_asfn_ = current_asfn_->next;
             _asfn->prev->next = _asfn->next;
             _asfn->next->prev = _asfn->prev;
+            pool_.release((char*)_asfn->hp_);
             delete _asfn;
         }
         break;
