@@ -6,18 +6,18 @@ acoro::sched sched;
 void
 foo(const void* msg)
 {
-    for (int i = 0; i < 5; ++i) {
-        std::cout << (char*)msg << "\n";
-        sched.yield();
-    }
+	for (int i = 0; i < 5; ++i) {
+		std::cout << (char*)msg << "\n";
+		sched.yield();
+	}
 }
 
 int
 main()
 {
-    sched.add(foo, "hello");
-    sched.add(foo, "world");
-    assert(!sched.full());
-    sched.run();
-    return 0;
+	sched.add(foo, "hello");
+	sched.add(foo, "world");
+	assert(!sched.full());
+	sched.run();
+	return 0;
 }
